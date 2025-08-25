@@ -1,0 +1,49 @@
+# Ignore compiled files
+*.class
+*.jar
+*.war
+*.ear
+
+# Ignore logs
+logs/
+*.log
+
+# Ignore IntelliJ IDEA files
+.idea/
+*.iml
+out/
+
+# Ignore Eclipse files
+.project
+.classpath
+.settings/
+
+# Ignore VS Code files
+.vscode/
+
+# Ignore build directories
+target/
+bin/
+Outputs/
+IndexData/
+
+# Ignore environment variables and config
+.env
+BaseStrategy.properties
+config/
+
+# Ignore dependency directories
+node_modules/
+
+# Ignore csv files
+*.csv
+.DS_Store
+-access-token-
+*-access-token
+
+# Ignore logbooks folders
+PositionalLogbooks
+logbooks
+SavedPositionalTrades
+
+*.txt
