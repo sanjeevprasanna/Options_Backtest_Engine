@@ -1,10 +1,12 @@
 package com.valar.basestrategy.state.minute;
 
 import com.valar.basestrategy.entities.Ohlc;
+import com.valar.basestrategy.entities.indicators.ADXEntity;
 import org.ta4j.core.BarSeries;
 import org.ta4j.core.BaseBar;
 import org.ta4j.core.BaseBarSeries;
 import org.ta4j.core.indicators.EMAIndicator;
+import org.ta4j.core.indicators.adx.ADXIndicator;
 import org.ta4j.core.indicators.helpers.ClosePriceIndicator;
 
 import org.ta4j.core.indicators.RSIIndicator;
@@ -33,6 +35,9 @@ public class State {
     public Float pp, r1, r2, s1, s2;
     public boolean pivotsInitialized ;
 
+    //for options strategy-adx
+    public Map<String,ADXEntity> adxMap =new HashMap<>();
+    public double prevDayADX=-Float.MAX_VALUE;
     public State(String name, String path, int parser, String dateTimeFormat,boolean removeDayIfDataNotPresent){
         this.name = name;
         this.parser = parser;
@@ -321,7 +326,7 @@ public class State {
         if(nextLn!=null)nextOhlc.update(nextLn);
     }
 
-    public void loadIndicators(int emaPeriod,int rsiPeriod) {
+    public void loadIndicators(int emaPeriod,int rsiPeriod, int adxPeriod, int adxSmoothing) {
 
         if(series==null) {
             series = loadSeries();
@@ -341,6 +346,13 @@ public class State {
                 ClosePriceIndicator closePrice = new ClosePriceIndicator(series);
                 RSIIndicator rsiIndicator = new RSIIndicator(closePrice, rsiPeriod);
                 rsiIndicatorMap.put(rsiPeriod, rsiIndicator);
+            }String key = adxPeriod + ":" + adxSmoothing;
+
+            if (!adxMap.containsKey(key)) {
+                BarSeries series;
+                series = this.series;
+                ADXEntity adxEntity = new ADXEntity(series, adxPeriod, adxSmoothing);
+                adxMap.put(key, adxEntity);
             }
 
     }
@@ -350,6 +362,28 @@ public class State {
     }
     public double getRsiVal(int rsiPeriod) {
             return  rsiIndicatorMap.get(rsiPeriod).getValue(parser).doubleValue();
+    }
+    public double getAdxVal(int adxPeriod, int adxSmoothing) {
+        String key = adxPeriod + ":" + adxSmoothing;
+        prevDayADX=adxMap.get(key).getADXValue(parser);
+        return adxMap.get(key).getADXValue(parser);
+    }
+    public double getPrevDayADX(){
+        return prevDayADX;
+    }
+    public double getAdxPlusVal(int adxPeriod, int adxSmoothing) {
+        String key = adxPeriod + ":" + adxSmoothing;
+        return adxMap.get(key).getMaxADX(parser,adxSmoothing);
+    }
+    public double getAdxMinusVal(int adxPeriod, int adxSmoothing) {
+        String key = adxPeriod + ":" + adxSmoothing;
+        return adxMap.get(key).getMinADX(parser,adxSmoothing);
+    }
+    public static int getATMStrike(float spot, int step) {
+        return Math.round(spot / step) * step;
+    }
+    public static int getOTMStrike(int atm, int step) {
+        return atm + step;
     }
 
  public void computePivots(float high, float low, float close) {

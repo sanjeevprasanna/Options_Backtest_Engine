@@ -134,7 +134,7 @@ public class Strategy {
 
                         IndexState indexState1 = indexStateMap.get(kv.candlePeriod); //15 35000 data
 
-                        indexState1.loadIndicators(kv.emaPeriod,kv.rsiPeriod);
+                        indexState1.loadIndicators(kv.emaPeriod,kv.rsiPeriod,kv.adxPeriod,kv.adxSmoothing);
 
 
                     }
@@ -215,7 +215,7 @@ public class Strategy {
                         //System.out.println("Iterate entered");
                         strategyImpl.iterate(mins);
                 });
-            //System.out.println(indexOhlc.dnt+" ");
+                //System.out.println(indexOhlc.dnt+" ");
             }
 
             if(!positional && (!indexOhlc.date.equals(indexNextOhlc.date) || indexState.finished)) {

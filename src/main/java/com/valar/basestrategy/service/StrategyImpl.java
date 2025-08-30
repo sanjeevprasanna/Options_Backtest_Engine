@@ -6,13 +6,19 @@ import com.valar.basestrategy.state.minute.IndexState;
 import com.valar.basestrategy.state.minute.State;
 import com.valar.basestrategy.tradeAndDayMetrics.DayMetric;
 import com.valar.basestrategy.utils.KeyValues;
+import com.valar.basestrategy.utils.ExpiryDatesManager;
+import com.valar.basestrategy.utils.OptionPremiumLoader;
 import org.ta4j.core.Bar;
 
+import java.io.IOException;
 import java.time.DayOfWeek;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
 import java.util.*;
 
+import static com.valar.basestrategy.application.PropertiesReader.properties;
 import static java.lang.Math.max;
 
 public class StrategyImpl {
@@ -30,14 +36,13 @@ public class StrategyImpl {
     private final Map<String, Double> dayAtrMap, dayAtrMapPercentage;
     private int parserAtLastTrade;
     private String lastAtrCheckeAtDate = "";
-    //private int chk = 0;
-    // Pivot tracking fields
     private String prevDate = null;
-    //private List<Ohlc> prevDayBars = new ArrayList<>();
 
-   private static final DateTimeFormatter DTF = DateTimeFormatter.ofPattern("dd-MM-yy HH:mm");
-    private static final DateTimeFormatter INPUT_DATE_FMT = DateTimeFormatter.ofPattern("dd-MM-yy HH:mm");
-    private static final DateTimeFormatter OUTPUT_DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+    public double prevDayADX = -Float.MAX_VALUE;
+    private ExpiryDatesManager expiryDatesManager;
+    public int currentNotInTrendADX = 0;
+    private static final DateTimeFormatter DTF = DateTimeFormatter.ofPattern("dd-MM-yy HH:mm");
+    private static final DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("dd-MM-yy");
 
     public StrategyImpl(
             boolean candlePeriodBelongsToDay,
@@ -56,6 +61,11 @@ public class StrategyImpl {
         this.dayAtrMapPercentage = dayAtrMapPercentage;
         this.dayMetricsMapList = new ArrayList<>(Arrays.asList(dayMetricsMap, stockDayMetricsMap));
         this.candlePeriodBelongsToDay = candlePeriodBelongsToDay;
+        try {
+            this.expiryDatesManager = new ExpiryDatesManager(properties.getProperty("optionsExpiryDates"));
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to load ExpiryDatesManager", e);
+        }
     }
 
     public void setUnSquaredTrades(int unSquaredTrades) {
@@ -63,44 +73,6 @@ public class StrategyImpl {
     }
 
     public void iterate(int mins) {
-        String currDate = indexState.ohlc.date;
-
-        // PIVOT LOGIC
-
-
-        //prevDayBars- holds Entire days minute ohlc
-        /*if (prevDate != null && !prevDate.equals(currDate)) {
-            if (!prevDayBars.isEmpty()) {
-                float hi = Float.NEGATIVE_INFINITY, lo = Float.POSITIVE_INFINITY, cls = 0;
-                for (Ohlc bar : prevDayBars) {
-                    hi = max(hi, bar.high);
-                    lo = Math.min(lo, bar.low);
-                    cls = bar.close;
-                }
-                indexState.computePivots(hi, lo, cls);
-                indexState.pivotsInitialized = true;
-            } else {
-                indexState.pivotsInitialized = false;
-            }
-            prevDayBars.clear();
-        }
-        prevDate = currDate;
-        prevDayBars.add(new Ohlc(indexState.ohlc));*/
-
-        if (prevDate != null && !prevDate.equals(currDate)) {
-            float high = indexState.ohlc.prevDayHigh;
-            float low = indexState.ohlc.prevDayLow;
-            float close = indexState.ohlc.lastDayClose;
-            indexState.computePivots(high, low, close);
-            indexState.pivotsInitialized = true;
-
-        }
-        /*System.out.println("DEBUG: Pivots for " + currDate + " | prevDayHigh=" + indexState.ohlc.prevDayHigh
-                + " prevDayLow=" + indexState.ohlc.prevDayLow
-                + " lastDayClose=" + indexState.ohlc.lastDayClose);
-        */
-        prevDate = currDate;
-
         if ((mins >= kv.startTime || candlePeriodBelongsToDay)
                 && !lastAtrCheckeAtDate.equals(indexState.ohlc.date)) {
             lastAtrCheckeAtDate = indexState.ohlc.date;
@@ -125,97 +97,125 @@ public class StrategyImpl {
                     && indexState.ohlc.mins <= kv.cutOffTime
                     && (kv.maxOverlap == 0 || unSquaredTrades < kv.maxOverlap)
                     && indexState.parser - parserAtLastTrade >= kv.tradeGap;
-                    //&& chk < 10000;
-            //chk++;
+
             // ENTRY
-            if (dayATRConditionSatisfied && entryConditionSatisfied && indexState.pivotsInitialized) {
-                if (mins >= kv.startTime && kv.rsiPeriod != 0 && kv.positional) {
-                    runOptionalLogic(entryConditionSatisfied);
+            if (dayATRConditionSatisfied && entryConditionSatisfied) {
+                Ohlc bar = indexState.ohlc;
+
+                //only execute from 2016-2022 for now.
+                LocalDate thresholdDate = LocalDate.parse("02-06-16", dateFormatter);
+                LocalDate lastOptionsDate = LocalDate.parse("02-06-19", dateFormatter);
+                LocalDate barDate = LocalDate.parse(bar.date, dateFormatter);
+                if (barDate.isBefore(thresholdDate) || barDate.isAfter(lastOptionsDate)) return;
+
+                double adx = indexState.getAdxVal(kv.adxPeriod, kv.adxSmoothing);
+                double plusDi = indexState.getAdxPlusVal(kv.adxPeriod, kv.adxSmoothing);
+                double minusDi = indexState.getAdxMinusVal(kv.adxPeriod, kv.adxSmoothing);
+
+                if ("09:15".equals(bar.time)) {
+                    prevDayADX = indexState.getPrevDayADX();
+                    if (adx < 20) {
+                        currentNotInTrendADX++;
+                    } else {
+                        currentNotInTrendADX = 0;
+                    }
+                }
+                //for setting up the first day prevDayADX
+                if (prevDayADX == -Float.MAX_VALUE) {
+                    prevDayADX = adx;
+                    return;
+                }
+
+                if (adx < 20) {
+                    return;
+                }
+
+                // --- ENTRY: BULLISH SETUP ---
+                if (adx > prevDayADX && adx > 25 && plusDi > minusDi) {
+                    try {
+                        String entryDatetime = indexState.ohlc.date + " " + indexState.ohlc.time;
+                        String expirySymbol = expiryDatesManager.getNearestExpiry(entryDatetime);
+
+                        float spot = indexState.ohlc.close;
+                        int atmStrike = indexState.getATMStrike(spot, kv.otmStrikeStep);
+                        int otmStrike = indexState.getOTMStrike(atmStrike, kv.otmStrikeStep);
+
+                        String year = entryDatetime.substring(6, 8);
+                        String atmFile = "BankNifty Options 1min 20160601 to 20231228 Cleaned/20" + year
+                                + "/BANKNIFTY" + expirySymbol.substring(9) + atmStrike + "CE.csv";
+                        String otmFile = "BankNifty Options 1min 20160601 to 20231228 Cleaned/20" + year
+                                + "/BANKNIFTY" + expirySymbol.substring(9) + otmStrike + "CE.csv";
+
+                        float atmPremium, otmPremium;
+                        try {
+                            atmPremium = OptionPremiumLoader.getPremiumAt(atmFile, entryDatetime);
+                            otmPremium = OptionPremiumLoader.getPremiumAt(otmFile, entryDatetime);
+                        } catch (Exception ex) {
+                            System.out.println("File Missing->" + "Bull" + " " + atmFile + " " + otmFile + " " + entryDatetime);
+                            return;
+                        }
+
+                        TradeEntity te = new TradeEntity(tradeId, 0, 0, kv, (IndexState) indexState, indexStateMap);
+                        te.setBullCallSpread(atmStrike, atmPremium, otmStrike, otmPremium, expirySymbol, kv.lotSize);
+                        float netDebit = atmPremium - otmPremium;
+                        te.setStopLoss(-kv.setStopLossOptions * netDebit);
+                        float maxProfit = (otmStrike - atmStrike) - netDebit;
+                        te.setTarget(kv.setTargetPriceOptions * maxProfit);
+
+                        // Set entry indicator values for logging at exit!
+                        te.entryAdx = adx;
+                        te.entryPlusDi = plusDi;
+                        te.entryMinusDi = minusDi;
+
+                        tradeEntities.add(te);
+                        tradeId++;
+                        parserAtLastTrade = indexState.parser;
+
+                    } catch (Exception ex) {
+                        System.err.println("Error during Bull Call entry: " + ex.getMessage());
+                    }
+                }
+                //Bearish Setup
+                if (adx > prevDayADX && adx > 25 && minusDi > plusDi) {
+                    String entryDatetime = indexState.ohlc.date + " " + indexState.ohlc.time;
+                    String expirySymbol = expiryDatesManager.getNearestExpiry(entryDatetime);
+                    float spot = indexState.ohlc.close;
+                    int step = 100;
+                    int atmStrike = indexState.getATMStrike(spot, step);
+                    int otmStrike = atmStrike - step;
+                    String year = entryDatetime.substring(6, 8);
+
+                    String atmFile = "BankNifty Options 1min 20160601 to 20231228 Cleaned/20" + year +
+                            "/BANKNIFTY" + expirySymbol.substring(9) + atmStrike + "PE.csv";
+                    String otmFile = "BankNifty Options 1min 20160601 to 20231228 Cleaned/20" + year +
+                            "/BANKNIFTY" + expirySymbol.substring(9) + otmStrike + "PE.csv";
+                    float atmPremium, otmPremium;
+                    try {
+                        atmPremium = OptionPremiumLoader.getPremiumAt(atmFile, entryDatetime);
+                        otmPremium = OptionPremiumLoader.getPremiumAt(otmFile, entryDatetime);
+                    } catch (Exception ex) {
+                        System.out.println("File Missing->" + "Bear" + " " + atmFile + " " + otmFile + " " + entryDatetime);
+                        return;
+                    }
+                    TradeEntity te = new TradeEntity(tradeId, 0, 0, kv, (IndexState) indexState, indexStateMap);
+                    te.setBearPutSpread(atmStrike, atmPremium, otmStrike, otmPremium, expirySymbol, kv.lotSize);
+                    float netDebit = atmPremium - otmPremium;
+                    te.setStopLoss(-kv.setStopLossOptions * netDebit);
+                    float maxProfit = (atmStrike - otmStrike) - netDebit;
+                    te.setTarget(kv.setTargetPriceOptions * maxProfit);
+
+                    // Set entry indicator values for logging at exit!
+                    te.entryAdx = adx;
+                    te.entryPlusDi = plusDi;
+                    te.entryMinusDi = minusDi;
+
+                    tradeEntities.add(te);
+                    tradeId++;
+                    parserAtLastTrade = indexState.parser;
                 }
             }
         }
     }
-
-    private void runOptionalLogic(boolean entryConditionSatisfied) {
-        Ohlc bar = indexState.ohlc;
-        int curIdx = indexState.parser;
-        indexState.loadIndicators(kv.emaPeriod, kv.rsiPeriod);
-
-        double emaVal = indexState.getEmaVal(kv.emaPeriod);
-        double rsiVal = indexState.getRsiVal(kv.rsiPeriod);
-
-        // last 10-candle high/low
-        float high10 = Float.NEGATIVE_INFINITY, low10 = Float.POSITIVE_INFINITY;
-        for (int i = max(0, curIdx - 10); i < curIdx; ++i) {
-            Bar o = indexState.series.getBar(i);
-            high10 = max(high10, o.getHighPrice().floatValue());
-            low10 = Math.min(low10, o.getLowPrice().floatValue());
-            //System.out.println("chkr"+" " +o.getBeginTime()+" "+o.getEndTime()+" ");
-        }
-
-        //String inputDateTime = indexState.ohlc.date + " " + indexState.ohlc.time;
-        //String formattedDateTime;
-        //LocalDateTime ldt = LocalDateTime.parse(inputDateTime, INPUT_DATE_FMT);
-        //formattedDateTime = ldt.format(OUTPUT_DATE_FMT);
-        //System.out.println(indexState.parser + "  " + formattedDateTime);
-
-        // ENTRY: LONG
-        if (kv.usePivots) {
-            if (bar.high>bar.prevDayHigh && rsiVal > kv.rsiLong && bar.close > emaVal  && kv.tradeType.equals("l")) {
-                TradeEntity trade = new TradeEntity(tradeId, 0, 0, kv, (IndexState) indexState, indexStateMap);
-                trade.setTrade(emaVal,rsiVal,(indexState.pivotsInitialized ? ((float) indexState.pp) : Float.NaN), bar.prevDayHigh,bar.prevDayLow, bar.high,bar.low,high10,low10);
-                trade.setStopLoss(indexState.nearestBelow(bar.close,low10));//support-SL
-                trade.setTarget(indexState.nearestAbove(bar.close, high10));//resistance-TP
-                tradeEntities.add(trade);
-                tradeId++;
-                parserAtLastTrade = indexState.parser;
-            }
-            // ENTRY: SHORT
-            if ( bar.low<bar.prevDayLow && rsiVal < kv.rsiShort && bar.close < emaVal &&  kv.tradeType.equals("s")) {
-                TradeEntity trade = new TradeEntity(tradeId, 0, 0, kv, (IndexState) indexState, indexStateMap);
-                trade.setTrade(emaVal,rsiVal,(indexState.pivotsInitialized ? ((float) indexState.pp) : Float.NaN), bar.prevDayHigh,bar.prevDayLow, bar.high,bar.low,high10,low10);
-                trade.setStopLoss(indexState.nearestAbove(bar.close, high10));
-                trade.setTarget(indexState.nearestBelow(bar.close,low10));
-                tradeEntities.add(trade);
-                tradeId++;
-                parserAtLastTrade = indexState.parser;
-            }
-        }
-    }
-
-    /*public void checkForExitsInEnteredTrades() {
-        Ohlc bar = indexState.ohlc;
-        LocalDateTime barDateTime = LocalDateTime.parse(bar.date + " " + bar.time, DTF);
-
-        float totalProfitPercent = 0, totalProfit = 0;
-        unSquaredTrades = 0;
-        for (TradeEntity tradeEntity : tradeEntities) {
-            if (tradeEntity.tradeSquared) continue;
-
-            char lOrS = tradeEntity.tradeAttribs.get(0).lOrS;
-            boolean forceExit = (barDateTime.getDayOfWeek() == DayOfWeek.THURSDAY && bar.mins >= (15 * 60 + 15));
-            boolean hitSL = false, hitTarget = false;
-
-            if (lOrS == 'l') {
-                hitSL = (bar.low <= tradeEntity.stopLoss);
-                hitTarget = (bar.high >= tradeEntity.target);
-            } else if (lOrS == 's') {
-                hitSL = (bar.high >= tradeEntity.stopLoss);
-                hitTarget = (bar.low <= tradeEntity.target);
-            }
-
-           if (hitSL || hitTarget || forceExit) {
-                tradeEntity.forceExit();
-                onTradeExit(bar.date, tradeEntity);
-            }
-
-            if (!tradeEntity.tradeSquared) unSquaredTrades++;
-            totalProfitPercent += tradeEntity.getTotalProfitPercent();
-            totalProfit += tradeEntity.getTotalProfit();
-        }
-        dayMaxProfit = Float.max(dayMaxProfit, totalProfit);
-        dayMaxProfitPercent = Float.max(dayMaxProfitPercent, totalProfitPercent);
-    }*/
 
     public void checkForExitsInEnteredTrades() {
         Ohlc bar = indexState.ohlc;
@@ -227,6 +227,26 @@ public class StrategyImpl {
         for (TradeEntity tradeEntity : tradeEntities) {
             if (tradeEntity.tradeSquared) continue;
 
+            // -------- Expiry-based exit ---------
+            boolean isExpiryExit = false;
+            try {
+                if (tradeEntity.optionLegs != null && !tradeEntity.optionLegs.isEmpty()) {
+                    String expirySymbol = tradeEntity.optionLegs.get(0).expirySymbol;
+                    LocalDate expiryDate = parseExpiryDate(expirySymbol);
+                    LocalDate currentBarDate = LocalDate.parse(bar.date, dateFormatter);
+                    if (!currentBarDate.isBefore(expiryDate)) { // currentBarDate >= expiryDate
+                        isExpiryExit = true;
+                    }
+                }
+            } catch (Exception ex) {
+                System.out.println("Error parsing expiry: " + ex.getMessage());
+            }
+            if (isExpiryExit) {
+                tradeEntity.exit("Expiry", "OptionExpiryExit");
+                onTradeExit(bar.date, tradeEntity);
+                continue;
+            }
+
             char lOrS = tradeEntity.tradeAttribs.get(0).lOrS;
             boolean forceExit = (barDateTime.getDayOfWeek() == DayOfWeek.THURSDAY && bar.mins >= (15 * 60 + 15));
             boolean hitSL = false, hitTarget = false;
@@ -238,8 +258,10 @@ public class StrategyImpl {
                 hitSL = (bar.high >= tradeEntity.stopLoss);
                 hitTarget = (bar.low <= tradeEntity.target);
             }
-
-            if (hitSL) {
+            if (currentNotInTrendADX >= kv.notInTrendDays) {
+                tradeEntity.exit("TimeExit", "TimeExit");
+                onTradeExit(bar.date, tradeEntity);
+            } else if (hitSL) {
                 tradeEntity.exit("StopLoss", "SL-hit");
                 onTradeExit(bar.date, tradeEntity);
             } else if (hitTarget) {
@@ -249,7 +271,6 @@ public class StrategyImpl {
                 tradeEntity.exit("ForceExit", "TimeExit");
                 onTradeExit(bar.date, tradeEntity);
             }
-
             if (!tradeEntity.tradeSquared) unSquaredTrades++;
             totalProfitPercent += tradeEntity.getTotalProfitPercent();
             totalProfit += tradeEntity.getTotalProfit();
@@ -275,5 +296,16 @@ public class StrategyImpl {
             System.out.println(dayMetricsMapList);
             System.exit(1);
         }
+    }
+
+    // ---- Helper: Parse expiry date from symbol like "BANKNIFTY02JUN16" ----
+    private static LocalDate parseExpiryDate(String expirySymbol) {
+        // Expects: BANKNIFTY02JUN16 → 02JUN16
+        String raw = expirySymbol.substring(9); // e.g., 08JUN17
+        DateTimeFormatter fmt = new DateTimeFormatterBuilder()
+                .parseCaseInsensitive()
+                .appendPattern("ddMMMyy")
+                .toFormatter(Locale.ENGLISH);
+        return LocalDate.parse(raw, fmt);
     }
 }

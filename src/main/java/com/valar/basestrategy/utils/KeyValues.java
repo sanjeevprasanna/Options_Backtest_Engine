@@ -22,6 +22,18 @@ public class KeyValues {
     public  final int rsiPeriod;
     public final boolean usePivots ;
     public final int rsiLong,rsiShort;
+
+
+    public final int  adxPeriod;
+    public  final int adxSmoothing;
+    public  final boolean useAdxOptionsStrat;
+
+    public final float setStopLossOptions;
+    public final float setTargetPriceOptions;
+    public final int notInTrendDays;
+    public final int otmStrikeStep;
+    public final int lotSize;
+
     public KeyValues(String ln) {
         this.ln = ln;
         String[] splits = ln.split(",");
@@ -42,6 +54,14 @@ public class KeyValues {
         tradeGap = Integer.parseInt(splits[iter++]);
         rsiLong = Integer.parseInt(splits[iter++]);
         rsiShort = Integer.parseInt(splits[iter++]);
+        adxPeriod = Integer.parseInt(splits[iter++]);
+        adxSmoothing = Integer.parseInt(splits[iter++]);
+        useAdxOptionsStrat = Boolean.parseBoolean(splits[iter++]);
+        setStopLossOptions=Float.parseFloat(splits[iter++]);
+        setTargetPriceOptions=Float.parseFloat(splits[iter++]);
+        notInTrendDays=Integer.parseInt(splits[iter++]);
+        otmStrikeStep=Integer.parseInt(splits[iter++]);
+        lotSize=Integer.parseInt(splits[iter++]);
     }
 
     public static List<String> getTimeFrames(int timeFrame) {
